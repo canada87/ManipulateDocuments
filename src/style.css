@@ -79,7 +79,21 @@ button:focus-visible, select:focus-visible { outline: 1px solid var(--accent); }
 .banner .msg { flex: 1; color: var(--warn); }
 
 /* The frame glows in the warning colour while the active doc has unsaved changes. */
-.frame { flex: 1; min-height: 0; position: relative; border-left: 3px solid transparent; transition: border-color .2s, box-shadow .2s; }
+.work { flex: 1; min-height: 0; display: flex; }
+.side { width: 240px; flex: none; overflow: auto; background: var(--bg2); border-right: 1px solid var(--border); padding: 6px 0; user-select: none; }
+.side[hidden] { display: none; }
+.side > details > summary { padding: 4px 10px; color: var(--accent2); font-size: 11px; letter-spacing: .12em; cursor: pointer; }
+.side .node { padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; color: var(--muted); }
+.side .node:hover { color: var(--fg); background: var(--active-line); }
+.side .node.active { color: var(--accent); }
+.side .kids { padding-left: 12px; }
+.side summary.node.dir { color: var(--fg); }
+.side .outline .node { color: var(--fg); }
+.side .outline .h2 { padding-left: 22px; } .side .outline .h3 { padding-left: 34px; }
+.side .outline .h4, .side .outline .h5, .side .outline .h6 { padding-left: 46px; color: var(--muted); }
+.side .tree, .side .outline { color: var(--muted); padding: 0 10px 8px; }
+#recent, #export { max-width: 96px; }
+.frame { flex: 1; min-width: 0; min-height: 0; position: relative; border-left: 3px solid transparent; transition: border-color .2s, box-shadow .2s; }
 body.dirty .frame { border-left-color: var(--warn); box-shadow: inset 0 1px 0 var(--warn), inset 0 0 40px -30px var(--warn); }
 #editor { height: 100%; }
 
@@ -90,6 +104,7 @@ body.dirty .frame { border-left-color: var(--warn); box-shadow: inset 0 1px 0 va
 .chip.saved { color: var(--accent2); }
 .chip.unsaved { color: var(--warn); box-shadow: 0 0 8px var(--warn); animation: pulse 1.6s ease-in-out infinite; }
 .chip.ro { color: var(--muted); }
+.fmt { padding: 0 4px; border: none; background: none; clip-path: none; color: inherit; font-size: 11px; }
 .ver { padding: 0 6px; border: none; background: none; clip-path: none; color: var(--accent); font-size: 11px; }
 
 .modal { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, .55); backdrop-filter: blur(2px); z-index: 10; }
@@ -102,7 +117,7 @@ body.dirty .frame { border-left-color: var(--warn); box-shadow: inset 0 1px 0 va
 .box h3 { margin: 16px 0 6px; color: var(--accent2); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
 .box .body { white-space: pre-wrap; line-height: 1.5; }
 .box .body p { margin: 0 0 8px; }
-.box .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.box .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .box button.primary { border-color: var(--accent); color: var(--accent); }
 .kv { border-collapse: collapse; white-space: normal; }
 .kv td { padding: 2px 14px 2px 0; }
@@ -139,6 +154,18 @@ body.dirty .frame { border-left-color: var(--warn); box-shadow: inset 0 1px 0 va
 .md-table table { border-collapse: collapse; font-size: .95em; }
 .md-table th, .md-table td { border: 1px solid var(--border); padding: 4px 12px; }
 .md-table th { background: var(--bg3); color: var(--accent); font-weight: 600; }
+.md-table img { max-width: 240px; vertical-align: middle; }
+.md-table a, .md-html a { color: var(--accent2); }
+.md-math-src { font-family: var(--font-code); font-size: .9em; color: var(--accent2); }
+.md-math { color: var(--fg); }
+.md-math-display { display: block; text-align: center; padding: 4px 0; cursor: text; }
+.md-math math { font-size: 1.1em; }
+.md-mermaid { padding: 8px 0; text-align: center; cursor: text; color: var(--muted); }
+.md-mermaid svg { max-width: 100%; height: auto; }
+.md-error { color: var(--warn); text-align: left; white-space: pre-wrap; font-family: var(--font-code); font-size: 13px; }
+.md-html { padding: 4px 0; cursor: text; }
+.md-html img { max-width: 100%; }
+.md-fn { font-size: .75em; vertical-align: super; line-height: 0; color: var(--accent2); }
 .md-table code { font-family: var(--font-code); color: var(--accent2); }
 
 .c-kw { color: var(--c-kw); } .c-str { color: var(--c-str); } .c-com { color: var(--c-com); font-style: italic; }

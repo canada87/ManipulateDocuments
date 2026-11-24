@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
@@ -19,7 +20,11 @@
     "@lezer/highlight": "^1.2.5",
     "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-dialog": "^2.8.4",
-    "@tauri-apps/plugin-opener": "^2.7.3"
+    "@tauri-apps/plugin-opener": "^2.7.3",
+    "dompurify": "^3.5.0",
+    "katex": "^0.19.1",
+    "marked": "^18.3.0",
+    "mermaid": "^12.3.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.6",

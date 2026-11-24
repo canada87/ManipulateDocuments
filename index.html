@@ -10,9 +10,16 @@
     <header class="topbar">
       <div class="tabs" id="tabs" role="tablist"></div>
       <div class="tools">
+        <button id="btn-side" title="Folder &amp; outline (Ctrl+B)">☰</button>
         <button id="btn-new" title="New (Ctrl+N)">NEW</button>
         <button id="btn-open" title="Open (Ctrl+O)">OPEN</button>
         <button id="btn-save" title="Save (Ctrl+S)">SAVE</button>
+        <select id="recent" title="Recent files"><option value="">RECENT</option></select>
+        <select id="export" title="Export">
+          <option value="">EXPORT</option>
+          <option value="html">HTML…</option>
+          <option value="pdf">PDF (print)…</option>
+        </select>
         <select id="theme" title="Theme">
           <option value="dystopia">Dystopia</option>
           <option value="phosphor">Phosphor</option>
@@ -22,13 +29,19 @@
       </div>
     </header>
     <div class="banner" id="banner" hidden></div>
-    <main class="frame" id="frame"><div id="editor"></div></main>
+    <div class="work">
+      <aside class="side" id="side" hidden>
+        <details open><summary>FILES</summary><div class="tree" id="tree"></div></details>
+        <details open><summary>OUTLINE</summary><div class="outline" id="outline"></div></details>
+      </aside>
+      <main class="frame" id="frame"><div id="editor"></div></main>
+    </div>
     <footer class="status">
       <span class="chip" id="st-state"></span>
       <span class="path" id="st-path"></span>
       <span class="spacer"></span>
       <span id="st-pos"></span>
-      <span id="st-fmt"></span>
+      <button class="fmt" id="st-fmt" title="Encoding: click to reopen or save with another one"></button>
       <button class="ver" id="st-ver" title="About"></button>
     </footer>
     <div class="modal" id="modal" hidden><div class="box" id="modal-box"></div></div>

@@ -1,10 +1,10 @@
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, MapMode, RangeSet, RangeValue, StateField } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, highlightActiveLine, lineNumbers, highlightSpecialChars, rectangularSelection } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
-import { syntaxHighlighting, indentOnInput, bracketMatching } from "@codemirror/language";
+import { syntaxHighlighting, indentOnInput, bracketMatching, ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -12,11 +12,14 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getVersion, getTauriVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, openPath } from "@tauri-apps/plugin-opener";
-import { livePreview, mdHighlight } from "./livepreview";
+import { livePreview, mdHighlight, mdExtensions, resolveSrc, type Ctx } from "./livepreview";
+import { decodeRaw, encodeEol, type Eol } from "./eol";
+import { toHtml, printHtml } from "./export";
 
 const APP = "NexusMD";
 const REPO = "https://github.com/canada87/ManipulateDocuments";
 const MD_EXT = /\.(md|markdown|mdown|mkd)$/i;
+const ENCODINGS = ["UTF-8", "windows-1252", "windows-1250", "ISO-8859-15", "UTF-16LE", "UTF-16BE"];
 
 interface Tab {
   id: number;
@@ -24,8 +27,9 @@ interface Tab {
   untitled: number;
   state: EditorState;
   saved: string; // disk content, normalized to \n and without BOM
-  eol: "\n" | "\r\n";
+  eol: Eol; // dominant line break; the other ones live in eolField
   bom: boolean;
+  enc: string;
   mtime: number | null;
   forceDirty: boolean; // e.g. file deleted on disk but kept open
   dirty: boolean;
@@ -34,9 +38,9 @@ interface Tab {
   scroll: number;
 }
 
-interface FileData { text: string; mtime: number | null; lossy: boolean }
-interface SessionTab { path: string | null; untitled: number; text?: string; mtime: number | null; eol: Tab["eol"]; bom: boolean }
-interface Session { theme: string; active: number; nextUntitled: number; tabs: SessionTab[] }
+interface FileData { text: string; mtime: number | null; lossy: boolean; encoding: string }
+interface SessionTab { path: string | null; untitled: number; text?: string; mtime: number | null; eol: Eol; bom: boolean; enc?: string }
+interface Session { theme: string; active: number; nextUntitled: number; tabs: SessionTab[]; recent?: string[]; side?: boolean }
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const tabs: Tab[] = [];
@@ -45,6 +49,7 @@ let nextId = 1;
 let nextUntitled = 1;
 let busy = 0; // >0 while we write files, so the disk watcher ignores our own mtime changes
 let version = "";
+let recent: string[] = [];
 const mode = new Compartment();
 
 // ---------- helpers ----------
@@ -52,14 +57,29 @@ const isMd = (t: Tab) => !t.path || MD_EXT.test(t.path);
 const baseName = (p: string) => p.split(/[\\/]/).pop() || p;
 const dirOf = (p: string | null) => (p ? p.replace(/[\\/][^\\/]*$/, "") : null);
 const title = (t: Tab) => (t.path ? baseName(t.path) : `Untitled-${t.untitled}`);
+const join = (dir: string, name: string) => `${dir}${dir.includes("\\") ? "\\" : "/"}${name}`;
 // shortcut: case-insensitive path compare (right on Windows/macOS, rare false match on Linux).
-const samePath = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-const normalize = (s: string) => s.replace(/\r\n?/g, "\n");
+const samePath = (a: string, b: string) => a.replace(/\\/g, "/").toLowerCase() === b.replace(/\\/g, "/").toLowerCase();
 const docText = (t: Tab) => t.state.doc.toString();
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 function computeDirty(t: Tab) {
   return t.forceDirty || t.state.doc.length !== t.saved.length || docText(t) !== t.saved;
+}
+
+// ---------- line endings ----------
+/** Marks a "\n" that was a non-dominant break on disk; dropped when that break is deleted. */
+class EolMark extends RangeValue {
+  startSide = 1; endSide = 1; point = true; mapMode = MapMode.TrackAfter;
+  constructor(readonly eol: Eol) { super(); }
+  eq(o: EolMark) { return o.eol === this.eol; }
+}
+const eolField = StateField.define<RangeSet<EolMark>>({ create: () => RangeSet.empty, update: (v, tr) => v.map(tr.changes) });
+
+function serialize(t: Tab) {
+  const odd = new Map<number, Eol>();
+  t.state.field(eolField).between(0, t.state.doc.length, (p, _to, v) => { odd.set(p, v.eol); });
+  return (t.bom ? "﻿" : "") + encodeEol(docText(t), t.eol, odd);
 }
 
 // ---------- editor ----------
@@ -80,12 +100,14 @@ const editorTheme = EditorView.theme({
   ".cm-button": { backgroundImage: "none", background: "var(--bg)", color: "var(--fg)", border: "1px solid var(--border)" },
 }, { dark: true });
 
+const ctxOf = (t: Tab): Ctx => ({ baseDir: () => dirOf(t.path), toSrc: convertFileSrc, openLink: href => openLink(t, href) });
+
 function modeExt(t: Tab) {
   return isMd(t)
     ? [
-        markdown({ base: markdownLanguage, codeLanguages: languages }),
+        markdown({ base: markdownLanguage, codeLanguages: languages, extensions: mdExtensions }),
         syntaxHighlighting(mdHighlight),
-        livePreview({ baseDir: () => dirOf(t.path), toSrc: convertFileSrc, openLink: href => openLink(t, href) }),
+        livePreview(ctxOf(t)),
       ]
     : [lineNumbers(), highlightActiveLine()];
 }
@@ -96,11 +118,12 @@ const onUpdate = EditorView.updateListener.of(u => {
     const d = computeDirty(active);
     if (d !== active.dirty) { active.dirty = d; renderTabs(); }
     persistSoon();
+    outlineSoon();
   }
   if (u.docChanged || u.selectionSet) renderStatus();
 });
 
-function makeState(t: Tab, text: string) {
+function makeState(t: Tab, text: string, odd: [number, Eol][] = []) {
   return EditorState.create({
     doc: text,
     extensions: [
@@ -110,6 +133,7 @@ function makeState(t: Tab, text: string) {
       EditorState.readOnly.of(t.readOnly),
       editorTheme,
       mode.of(modeExt(t)),
+      eolField.init(() => RangeSet.of(odd.map(([p, e]) => new EolMark(e).range(p)))),
       onUpdate,
     ],
   });
@@ -118,18 +142,26 @@ function makeState(t: Tab, text: string) {
 const view = new EditorView({ parent: $("editor") });
 
 // ---------- tabs ----------
-function newTab(path: string | null, data: { text: string; mtime: number | null; lossy?: boolean } | null, current?: string): Tab {
-  const raw = data?.text ?? "";
-  const bom = raw.startsWith("﻿");
-  const saved = normalize(bom ? raw.slice(1) : raw);
+function newTab(path: string | null, data: FileData | null, current?: string): Tab {
+  const { text: saved, eol, bom, odd } = decodeRaw(data?.text ?? "");
   const t: Tab = {
     id: nextId++, path, untitled: path ? 0 : nextUntitled++, state: null as unknown as EditorState,
-    saved, eol: raw.includes("\r\n") ? "\r\n" : "\n", bom, mtime: data?.mtime ?? null,
+    saved, eol, bom, enc: data?.encoding ?? "UTF-8", mtime: data?.mtime ?? null,
     forceDirty: false, dirty: false, readOnly: !!data?.lossy, conflict: null, scroll: 0,
   };
-  t.state = makeState(t, current ?? saved);
+  // shortcut: unsaved text restored from the session loses its mixed-EOL marks (dominant EOL only); store marks in the session if that matters.
+  t.state = makeState(t, current ?? saved, current == null ? odd : []);
   t.dirty = computeDirty(t);
   return t;
+}
+
+/** Replace a tab's content with what was just read from disk. */
+function loadInto(t: Tab, data: FileData) {
+  const { text, eol, bom, odd } = decodeRaw(data.text);
+  Object.assign(t, { saved: text, eol, bom, enc: data.encoding, mtime: data.mtime, readOnly: data.lossy, forceDirty: false, conflict: null });
+  t.state = makeState(t, text, odd);
+  if (t === active) view.setState(t.state);
+  t.dirty = computeDirty(t);
 }
 
 function activate(t: Tab) {
@@ -141,6 +173,7 @@ function activate(t: Tab) {
   renderTabs();
   renderStatus();
   renderBanner();
+  renderSide();
   view.focus();
   persistSoon();
 }
@@ -157,10 +190,17 @@ async function openFiles(paths: string[]) {
     const existing = tabs.find(t => t.path && samePath(t.path, p));
     if (existing) { activate(existing); continue; }
     try {
-      const data = await invoke<FileData>("read_file", { path: p });
+      let data = await invoke<FileData>("read_file", { path: p });
+      if (data.lossy) {
+        const enc = await dialog("Not UTF-8", `${baseName(p)} is not valid UTF-8 text. Pick its encoding (windows-1252 is the usual one for Western European text), or open it read-only so saving can't corrupt it.`, [...ENCODINGS.slice(1), "Read-only"]);
+        if (!enc) continue;
+        if (enc !== "Read-only") data = await invoke<FileData>("read_file", { path: p, encoding: enc });
+      }
       addTab(newTab(p, data));
-      if (data.lossy) await dialog("Not UTF-8", `${baseName(p)} is not valid UTF-8 text. It is opened read-only so saving can't corrupt it.`, ["OK"]);
+      addRecent(p);
     } catch (e) {
+      recent = recent.filter(r => !samePath(r, p));
+      renderRecent();
       await dialog("Cannot open file", `${p}\n\n${errText(e)}`, ["OK"]);
     }
   }
@@ -188,7 +228,7 @@ async function saveTab(t: Tab, as = false): Promise<boolean> {
   const text = docText(t);
   busy++;
   try {
-    t.mtime = await invoke<number | null>("write_file", { path, text: (t.bom ? "﻿" : "") + text.replace(/\n/g, t.eol) });
+    t.mtime = await invoke<number | null>("write_file", { path, text: serialize(t), encoding: t.enc });
   } catch (e) {
     await dialog("Save failed", `${path}\n\n${errText(e)}`, ["OK"]);
     return false;
@@ -205,7 +245,8 @@ async function saveTab(t: Tab, as = false): Promise<boolean> {
     t.state = t.state.update({ effects: mode.reconfigure(modeExt(t)) }).state;
     if (t === active) activate(t);
   }
-  renderTabs(); renderStatus(); renderBanner(); persistSoon();
+  addRecent(path);
+  renderTabs(); renderStatus(); renderBanner(); renderSide(true); persistSoon();
   return true;
 }
 
@@ -252,15 +293,10 @@ async function resolveConflict(t: Tab, action: "reload" | "ignore" | "keep" | "c
   if (action === "keep") { t.forceDirty = true; t.mtime = null; }
   else {
     let data: FileData;
-    try { data = await invoke<FileData>("read_file", { path: t.path }); }
+    try { data = await invoke<FileData>("read_file", { path: t.path, encoding: t.enc }); }
     catch (e) { await dialog("Cannot read file", errText(e), ["OK"]); return; }
-    const raw = data.text.startsWith("﻿") ? data.text.slice(1) : data.text;
-    t.saved = normalize(raw);
-    t.mtime = data.mtime;
-    if (action === "reload") {
-      t.state = makeState(t, t.saved);
-      if (t === active) view.setState(t.state);
-    }
+    if (action === "reload") loadInto(t, data);
+    else { t.saved = decodeRaw(data.text).text; t.mtime = data.mtime; }
   }
   t.conflict = null;
   t.dirty = computeDirty(t);
@@ -279,8 +315,10 @@ async function persistNow() {
     theme: document.documentElement.dataset.theme!,
     active: tabs.indexOf(active),
     nextUntitled,
+    recent,
+    side: !$("side").hidden,
     tabs: tabs.map(t => ({
-      path: t.path, untitled: t.untitled, mtime: t.mtime, eol: t.eol, bom: t.bom,
+      path: t.path, untitled: t.untitled, mtime: t.mtime, eol: t.eol, bom: t.bom, enc: t.enc,
       ...(t.dirty ? { text: docText(t) } : {}),
     })),
   };
@@ -291,6 +329,9 @@ async function persistNow() {
 async function restore(s: Session) {
   setTheme(s.theme);
   nextUntitled = s.nextUntitled || 1;
+  recent = s.recent ?? [];
+  renderRecent();
+  $("side").hidden = !s.side;
   for (const st of s.tabs) {
     if (!st.path) {
       const t = newTab(null, null, st.text);
@@ -299,10 +340,12 @@ async function restore(s: Session) {
       continue;
     }
     let disk: FileData | null = null;
-    try { disk = await invoke<FileData>("read_file", { path: st.path }); } catch { /* missing */ }
+    try { disk = await invoke<FileData>("read_file", { path: st.path, encoding: st.enc }); } catch { /* missing */ }
     if (!disk && st.text == null) continue; // gone, and nothing unsaved to keep
     const t = newTab(st.path, disk, st.text);
-    t.eol = st.eol; t.bom = st.bom;
+    t.bom = st.bom;
+    if (st.text != null || !disk) t.eol = st.eol;
+    if (st.enc) t.enc = st.enc;
     if (!disk) { t.forceDirty = true; t.dirty = true; }
     // Keep the old baseline for dirty tabs so the watcher flags files changed while we were closed.
     else if (st.text != null) t.mtime = st.mtime;
@@ -323,6 +366,7 @@ function renderTabs() {
     el.innerHTML = `<span class="dot"></span><span class="name"></span><button class="x" title="Close (Ctrl+W)">×</button>`;
     el.querySelector(".name")!.textContent = title(t);
     el.onmousedown = e => { if (e.button === 1) { e.preventDefault(); closeTab(t); } };
+    el.onpointerdown = e => { if (e.button === 0 && !(e.target as HTMLElement).classList.contains("x")) dragTab(t, e); };
     el.onclick = e => { if ((e.target as HTMLElement).classList.contains("x")) closeTab(t); else if (t !== active) activate(t); };
     return el;
   }));
@@ -331,6 +375,32 @@ function renderTabs() {
   const winTitle = `${active.dirty ? "● " : ""}${title(active)} — ${APP}`;
   document.title = winTitle;
   try { getCurrentWindow().setTitle(winTitle).catch(() => {}); } catch { /* not running inside Tauri */ }
+}
+
+/** Reorder tabs by dragging (pointer events: the webview's native drag & drop is taken by file drops). */
+function dragTab(t: Tab, down: PointerEvent) {
+  let moved = false;
+  const move = (e: PointerEvent) => {
+    if (!moved && Math.abs(e.clientX - down.clientX) < 6) return;
+    moved = true;
+    const over = (document.elementFromPoint(e.clientX, down.clientY) as HTMLElement | null)?.closest<HTMLElement>(".tab");
+    const to = over ? [...$("tabs").children].indexOf(over) : -1;
+    const from = tabs.indexOf(t);
+    if (to < 0 || to === from) return;
+    // swap only past the target's middle, so tabs of different widths don't flip back and forth
+    const r = over!.getBoundingClientRect();
+    if (to > from ? e.clientX < r.left + r.width / 2 : e.clientX > r.left + r.width / 2) return;
+    tabs.splice(from, 1);
+    tabs.splice(to, 0, t);
+    renderTabs();
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    if (moved) persistSoon();
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
 }
 
 function renderStatus() {
@@ -342,7 +412,8 @@ function renderStatus() {
   const head = t.state.selection.main.head;
   const line = t.state.doc.lineAt(head);
   $("st-pos").textContent = `LN ${line.number}  COL ${head - line.from + 1}`;
-  $("st-fmt").textContent = `${isMd(t) ? "MD" : "TXT"} · UTF-8${t.bom ? " BOM" : ""} · ${t.eol === "\r\n" ? "CRLF" : "LF"}`;
+  const eol = { "\n": "LF", "\r\n": "CRLF", "\r": "CR" }[t.eol];
+  $("st-fmt").textContent = `${isMd(t) ? "MD" : "TXT"} · ${t.enc}${t.bom ? " BOM" : ""} · ${eol}${t.state.field(eolField).size ? " MIXED" : ""}`;
 }
 
 function renderBanner() {
@@ -361,6 +432,138 @@ function renderBanner() {
     const btn = Object.assign(document.createElement("button"), { textContent: label });
     btn.onclick = () => resolveConflict(t, act);
     b.append(btn);
+  }
+}
+
+async function changeEncoding(t: Tab) {
+  const how = !t.path ? "Save with…" : t.readOnly ? "Reopen with…"
+    : await dialog("Encoding", `${title(t)} is ${t.enc}. Reopen it from disk with another encoding, or keep the text and save it with another one.`, ["Reopen with…", "Save with…", "Cancel"]);
+  if (how !== "Reopen with…" && how !== "Save with…") return;
+  const reopen = how === "Reopen with…";
+  const enc = await dialog(reopen ? "Reopen with encoding" : "Save with encoding",
+    reopen ? `Read ${title(t)} again from disk as:${t.dirty ? "\n(unsaved changes will be lost)" : ""}` : "Next saves will use:", [...ENCODINGS, "Cancel"]);
+  if (!enc || enc === "Cancel") return;
+  if (!reopen) { t.enc = enc; t.forceDirty = !!t.path; t.dirty = computeDirty(t); }
+  else {
+    try { loadInto(t, await invoke<FileData>("read_file", { path: t.path, encoding: enc })); }
+    catch (e) { await dialog("Cannot read file", errText(e), ["OK"]); return; }
+    if (t.readOnly) await dialog("Still not readable", `${title(t)} has bytes that are not valid ${enc}. It stays read-only.`, ["OK"]);
+  }
+  renderTabs(); renderStatus(); renderBanner(); persistSoon();
+}
+
+// ---------- sidebar: folder tree + outline ----------
+const expanded = new Set<string>();
+let treeRoot: string | null | undefined;
+
+function renderSide(force = false) {
+  if ($("side").hidden) return;
+  renderOutline();
+  const root = dirOf(active.path);
+  if (root === treeRoot && !force) { markActiveFile(); return; }
+  treeRoot = root;
+  const box = $("tree");
+  if (!root) { box.textContent = "Save the document to browse its folder."; return; }
+  expanded.add(root);
+  box.replaceChildren(dirEl(root, baseName(root)));
+}
+
+function dirEl(path: string, name: string) {
+  const d = document.createElement("details");
+  d.innerHTML = `<summary class="node dir"></summary><div class="kids"></div>`;
+  const sum = d.querySelector("summary")!;
+  sum.textContent = name;
+  sum.title = path;
+  // Listed on every open, so re-opening a folder refreshes it.
+  d.ontoggle = async () => {
+    if (!d.open) { expanded.delete(path); return; }
+    expanded.add(path);
+    const kids = d.querySelector(".kids")!;
+    try {
+      const list = await invoke<{ name: string; dir: boolean }[]>("list_dir", { path });
+      kids.replaceChildren(...list.filter(e => e.dir || MD_EXT.test(e.name)).map(e => (e.dir ? dirEl : fileEl)(join(path, e.name), e.name)));
+    } catch (e) { kids.textContent = errText(e); }
+    markActiveFile();
+  };
+  d.open = expanded.has(path);
+  return d;
+}
+
+function fileEl(path: string, name: string) {
+  const el = Object.assign(document.createElement("div"), { className: "node file", textContent: name, title: path });
+  el.dataset.path = path;
+  el.onclick = () => openFiles([path]);
+  return el;
+}
+
+function markActiveFile() {
+  $("tree").querySelectorAll<HTMLElement>(".file").forEach(el => el.classList.toggle("active", !!active.path && samePath(el.dataset.path!, active.path)));
+}
+
+let outlineTimer = 0;
+function outlineSoon() {
+  clearTimeout(outlineTimer);
+  outlineTimer = window.setTimeout(renderOutline, 300);
+}
+
+function renderOutline() {
+  const box = $("outline");
+  if ($("side").hidden) return;
+  if (!isMd(active)) { box.textContent = "No outline for plain text."; return; }
+  const st = active.state;
+  const items: HTMLElement[] = [];
+  (ensureSyntaxTree(st, st.doc.length, 100) ?? syntaxTree(st)).iterate({
+    enter: n => {
+      const m = /^(ATX|Setext)Heading(\d)$/.exec(n.name);
+      if (!m) return n.name === "Document";
+      const line = st.doc.lineAt(n.from);
+      const text = m[1] === "ATX" ? line.text.replace(/^\s*#+\s*|\s+#+\s*$/g, "") : line.text.trim();
+      const el = Object.assign(document.createElement("div"), { className: `node h${m[2]}`, textContent: text || "(empty)" });
+      el.onclick = () => {
+        view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: "start", yMargin: 20 }) });
+        view.focus();
+      };
+      items.push(el);
+      return false;
+    },
+  });
+  if (items.length) box.replaceChildren(...items); else box.textContent = "No headings.";
+}
+
+function toggleSide() {
+  $("side").hidden = !$("side").hidden;
+  treeRoot = undefined;
+  renderSide();
+  persistSoon();
+  view.focus();
+}
+
+// ---------- recent files ----------
+function addRecent(p: string) {
+  recent = [p, ...recent.filter(r => !samePath(r, p))].slice(0, 12);
+  renderRecent();
+}
+
+function renderRecent() {
+  const sel = $<HTMLSelectElement>("recent");
+  sel.replaceChildren(new Option("RECENT", ""), ...recent.map(p => new Option(`${baseName(p)}  —  ${dirOf(p)}`, p)));
+  sel.value = "";
+}
+
+// ---------- export ----------
+async function exportDoc(t: Tab, how: string) {
+  try {
+    if (how === "html") {
+      const path = await save({
+        defaultPath: `${(t.path ?? title(t)).replace(MD_EXT, "")}.html`,
+        filters: [{ name: "HTML", extensions: ["html"] }],
+      });
+      if (path) await invoke("write_file", { path, text: await toHtml(docText(t), title(t)) });
+    } else if (how === "pdf") {
+      printHtml(await toHtml(docText(t), title(t), src => resolveSrc(src, ctxOf(t)) || src));
+    }
+  } catch (e) {
+    await dialog("Export failed", errText(e), ["OK"]);
   }
 }
 
@@ -405,9 +608,12 @@ async function about() {
       <tr><td>Ctrl+N / Ctrl+O</td><td>New / Open</td></tr>
       <tr><td>Ctrl+S / Ctrl+Shift+S</td><td>Save / Save as</td></tr>
       <tr><td>Ctrl+W</td><td>Close tab</td></tr>
+      <tr><td>Ctrl+B</td><td>Folder &amp; outline sidebar</td></tr>
       <tr><td>Ctrl+Tab / Ctrl+Shift+Tab</td><td>Next / previous tab</td></tr>
       <tr><td>Ctrl+F</td><td>Find &amp; replace</td></tr>
-      <tr><td>Ctrl+Click</td><td>Open link</td></tr>
+      <tr><td>Ctrl+Click</td><td>Open link or [[wikilink]]; jump between a footnote and its text</td></tr>
+      <tr><td>Drag a tab</td><td>Reorder tabs</td></tr>
+      <tr><td>Click the encoding</td><td>Reopen or save with another encoding</td></tr>
     </table>`, ["Close"], true);
 }
 
@@ -422,6 +628,7 @@ document.addEventListener("keydown", e => {
   else if (k === "o") run(openDialog);
   else if (k === "n") run(() => addTab(newTab(null, null)));
   else if (k === "w") run(() => closeTab(active));
+  else if (k === "b") run(toggleSide);
   else if (k === "tab") run(() => activate(tabs[(tabs.indexOf(active) + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length]));
 }, true);
 
@@ -430,6 +637,19 @@ $("btn-open").onclick = openDialog;
 $("btn-save").onclick = () => saveTab(active);
 $("btn-about").onclick = about;
 $("st-ver").onclick = about;
+$("st-fmt").onclick = () => changeEncoding(active);
+$("btn-side").onclick = toggleSide;
+$<HTMLSelectElement>("recent").onchange = e => {
+  const sel = e.target as HTMLSelectElement, p = sel.value;
+  sel.value = "";
+  if (p) openFiles([p]); else view.focus();
+};
+$<HTMLSelectElement>("export").onchange = e => {
+  const sel = e.target as HTMLSelectElement, how = sel.value;
+  sel.value = "";
+  view.focus();
+  exportDoc(active, how);
+};
 $<HTMLSelectElement>("theme").onchange = e => { setTheme((e.target as HTMLSelectElement).value); persistNow(); view.focus(); };
 
 async function start() {
@@ -448,7 +668,7 @@ async function start() {
   await getCurrentWebview().onDragDropEvent(e => { if (e.payload.type === "drop") openFiles(e.payload.paths); });
   // Window close never asks: unsaved work is kept in the session, like Notepad++.
   await getCurrentWindow().onCloseRequested(async () => { await persistNow(); });
-  window.addEventListener("focus", checkDisk);
+  window.addEventListener("focus", () => { checkDisk(); renderSide(true); });
   setInterval(checkDisk, 2000);
 }
 

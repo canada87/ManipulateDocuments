@@ -8,6 +8,11 @@ A fast, lightweight standalone Markdown editor (Tauri 2 + Rust + CodeMirror 6).
 - Multiple documents as tabs; one window (opening another file adds a tab).
 - Warns when an open file is changed or deleted by another program: reload, or keep yours and overwrite on save.
 - Works on any plain-text file; `.md` files get live preview.
+- Renders `$math$` / `$$math$$` (KaTeX, as MathML), ```` ```mermaid ```` diagrams, raw HTML blocks (sanitized), footnotes, `[[wikilinks]]`, and links/images/math inside tables.
+- Sidebar (Ctrl+B) with the document's folder tree and an outline of its headings.
+- Reorder tabs by dragging; recent files list; window size and position are remembered.
+- Non-UTF-8 files: pick the encoding (Windows-1252, UTF-16, …) when opening, or click the encoding in the status bar to reopen/save with another one. Mixed line endings are preserved.
+- Export to HTML, or to PDF through the print dialog.
 - Themes: Dystopia, Phosphor, Synthwave.
 
 ## Develop
@@ -19,7 +24,7 @@ npm install
 npm run tauri dev
 ```
 
-Rust tests: `cd src-tauri; cargo test`
+Tests: `npm test` (line endings) and `cd src-tauri; cargo test` (Rust).
 
 ## Release a new version
 
