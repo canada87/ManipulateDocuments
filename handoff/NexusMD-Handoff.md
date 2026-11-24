@@ -5,8 +5,8 @@ last_updated: 2026-11-24
 
 ## Quando usarlo
 Riapre lo sviluppo di NexusMD, l'editor Markdown standalone (Tauri 2 + CodeMirror 6).
-La v0.1.0 è rilasciata su GitHub. La v0.2.0 (14 voci della roadmap) è committata su main ma NON
-rilasciata (niente npm version, niente tag): si riparte dal collaudo nell'app vera e dal rilascio.
+La v0.1.0 e la v0.2.0 (14 voci della roadmap) sono rilasciate su GitHub. La v0.2.0 non è stata
+collaudata a mano nell'app vera: si riparte da quel collaudo e dai fix (che andranno in una v0.2.x).
 
 ## Il prompt
 
@@ -44,6 +44,8 @@ rilasciata (niente npm version, niente tag): si riparte dal collaudo nell'app ve
 - v0.1.0 rilasciata: GitHub Actions Release run #1 riuscita in 6m0s, 5 asset pubblicati
   (NexusMD_0.1.0_x64-setup.exe, _aarch64.dmg, _aarch64.app.tar.gz, _amd64.deb, _amd64.AppImage).
   Build locale: nexusmd.exe 4,0 MB, installer NSIS 1,71 MB (per-utente, senza admin, associa .md).
+- v0.2.0 rilasciata 2026-11-25: Release run #2 riuscita, 5 asset (NexusMD_0.2.0_x64-setup.exe 3,4 MB,
+  _aarch64.dmg, _amd64.deb, _amd64.AppImage, NexusMD_aarch64.app.tar.gz).
 - La versione vive SOLO in package.json (tauri.conf.json ha "version": "../package.json"; il workflow
   fallisce se il tag non coincide). Rilascio: `npm version minor` poi `git push --follow-tags`.
   La versione in src-tauri/Cargo.toml non viene usata.
@@ -91,15 +93,12 @@ Risultati negativi / trappole:
 
 ## Cosa voglio adesso
 1. L'utente collauda la v0.2.0 con `npm run tauri dev` (lista "NON verificato" qui sopra; RECENT è il menu
-   a tendina dei file recenti nella barra in alto) e scrive in chat cosa non va; correggere. node_modules è
-   già aggiornato (npm i fatto); su un clone nuovo serve `npm install`. ROADMAP.md e README.md sono aggiornati.
-2. Su OK esplicito dell'utente in chat (il commit "NexusMD 0.2.0: math, mermaid, wikilinks, footnotes,
-   sidebar, encodings, export" è già fatto; eventuali fix vanno in commit a parte): `npm version minor`
-   (→ 0.2.0 + commit + tag), `git push --follow-tags` in background. Senza gh: stato run con il browser
-   pane su https://github.com/canada87/ManipulateDocuments/actions (get_page_text); nomi degli asset con
-   una fetch da JS nella pagina github.com di
-   https://github.com/canada87/ManipulateDocuments/releases/expanded_assets/v0.2.0 (la pagina release
-   li carica in lazy, read_page non li vede).
+   a tendina dei file recenti nella barra in alto) e scrive in chat cosa non va; correggere, un commit per fix.
+   Su un clone nuovo serve `npm install`.
+2. Su OK esplicito dell'utente in chat: `npm version patch` (→ 0.2.1 + commit + tag), `git push --follow-tags`
+   in background. Senza gh: stato run dall'API pubblica
+   https://api.github.com/repos/canada87/ManipulateDocuments/actions/runs?per_page=1 (curl, campi status e
+   conclusion) e asset da https://api.github.com/repos/canada87/ManipulateDocuments/releases/tags/v0.2.1.
 
 
 ## Regole
