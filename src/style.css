@@ -72,6 +72,17 @@ button:focus-visible, select:focus-visible { outline: 1px solid var(--accent); }
 .tab .x { padding: 0 5px; border: none; background: none; clip-path: none; color: var(--muted); visibility: hidden; }
 .tab:hover .x, .tab.active .x { visibility: visible; }
 .tab .x:hover { color: var(--warn); }
+.tab.shown { color: var(--fg); border-top-color: var(--muted); }
+.tabs .add { flex: none; align-self: center; padding: 2px 9px; margin-left: 4px; border: none; background: none; clip-path: none; color: var(--muted); font-size: 16px; line-height: 1; }
+.tabs .add:hover { color: var(--accent); }
+
+.menu-wrap { position: relative; }
+.menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 180px; display: flex; flex-direction: column; padding: 6px; background: var(--bg2); border: 1px solid var(--accent); box-shadow: var(--glow); }
+.menu[hidden] { display: none; }
+.menu .label { padding: 6px 8px 2px; color: var(--accent2); font-size: 10px; letter-spacing: .14em; }
+.menu button { text-align: left; border: none; background: none; clip-path: none; padding: 4px 8px; }
+.menu button:hover { background: var(--bg3); }
+.menu button.on::before { content: "◆ "; color: var(--accent); }
 @keyframes pulse { 50% { opacity: .35; } }
 
 .banner { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: color-mix(in srgb, var(--warn) 14%, var(--bg2)); border-bottom: 1px solid var(--warn); }
@@ -92,10 +103,23 @@ button:focus-visible, select:focus-visible { outline: 1px solid var(--accent); }
 .side .outline .h2 { padding-left: 22px; } .side .outline .h3 { padding-left: 34px; }
 .side .outline .h4, .side .outline .h5, .side .outline .h6 { padding-left: 46px; color: var(--muted); }
 .side .tree, .side .outline { color: var(--muted); padding: 0 10px 8px; }
-#recent, #export { max-width: 96px; }
+#recent { max-width: 96px; }
+.panes { flex: 1; min-width: 0; min-height: 0; display: flex; position: relative; }
 .frame { flex: 1; min-width: 0; min-height: 0; position: relative; border-left: 3px solid transparent; transition: border-color .2s, box-shadow .2s; }
-body.dirty .frame { border-left-color: var(--warn); box-shadow: inset 0 1px 0 var(--warn), inset 0 0 40px -30px var(--warn); }
-#editor { height: 100%; }
+.frame + .frame { border-left-color: var(--border); }
+.frame.focused { box-shadow: inset 0 2px 0 var(--accent); }
+.frame.dirty { border-left-color: var(--warn); box-shadow: inset 0 1px 0 var(--warn), inset 0 0 40px -30px var(--warn); }
+.frame .editor { height: 100%; }
+/* Right edge of the text column: drag it to change the page width. */
+.guide { position: absolute; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 2; }
+.guide::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; border-left: 1px dashed var(--border); }
+.guide:hover::after, .guide.on::after { border-left: 1px solid var(--accent); box-shadow: var(--glow); }
+.plain .guide { display: none; }
+.unsplit { display: none; position: absolute; top: 4px; right: 14px; z-index: 3; padding: 0 6px; }
+.panes:has(.frame + .frame) .unsplit { display: block; }
+.drop { position: absolute; top: 0; bottom: 0; width: 50%; z-index: 4; pointer-events: none; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px dashed var(--accent); }
+.drop.left { left: 0; } .drop.right { right: 0; }
+.drop[hidden] { display: none; }
 
 .status { display: flex; align-items: center; gap: 14px; padding: 3px 10px; background: var(--bg2); border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; letter-spacing: .06em; }
 .status .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -124,7 +148,7 @@ body.dirty .frame { border-left-color: var(--warn); box-shadow: inset 0 1px 0 va
 .kv td:first-child { color: var(--muted); }
 
 /* ---------- editor content ---------- */
-.cm-content { max-width: 880px; margin: 0 auto; padding-left: 32px !important; padding-right: 32px !important; font-size: 16px; }
+.cm-content { max-width: var(--page, 880px); padding-left: 32px !important; padding-right: 32px !important; font-size: 16px; }
 .plain .cm-scroller { font-family: var(--font-code) !important; font-size: 14px; }
 .plain .cm-content { max-width: none; margin: 0; padding-left: 8px !important; font-size: 14px; }
 

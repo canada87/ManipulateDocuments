@@ -11,21 +11,23 @@
       <div class="tabs" id="tabs" role="tablist"></div>
       <div class="tools">
         <button id="btn-side" title="Folder &amp; outline (Ctrl+B)">☰</button>
-        <button id="btn-new" title="New (Ctrl+N)">NEW</button>
         <button id="btn-open" title="Open (Ctrl+O)">OPEN</button>
         <button id="btn-save" title="Save (Ctrl+S)">SAVE</button>
         <select id="recent" title="Recent files"><option value="">RECENT</option></select>
-        <select id="export" title="Export">
-          <option value="">EXPORT</option>
-          <option value="html">HTML…</option>
-          <option value="pdf">PDF (print)…</option>
-        </select>
-        <select id="theme" title="Theme">
-          <option value="dystopia">Dystopia</option>
-          <option value="phosphor">Phosphor</option>
-          <option value="synthwave">Synthwave</option>
-        </select>
-        <button id="btn-about" title="About">i</button>
+        <div class="menu-wrap">
+          <button id="btn-settings" title="Settings" aria-haspopup="menu">⚙</button>
+          <div class="menu" id="settings" role="menu" hidden>
+            <div class="label">EXPORT</div>
+            <button data-export="html">HTML…</button>
+            <button data-export="pdf">PDF (print)…</button>
+            <div class="label">THEME</div>
+            <button data-set-theme="dystopia">Dystopia</button>
+            <button data-set-theme="phosphor">Phosphor</button>
+            <button data-set-theme="synthwave">Synthwave</button>
+            <div class="label">HELP</div>
+            <button id="btn-about">About &amp; shortcuts</button>
+          </div>
+        </div>
       </div>
     </header>
     <div class="banner" id="banner" hidden></div>
@@ -34,7 +36,7 @@
         <details open><summary>FILES</summary><div class="tree" id="tree"></div></details>
         <details open><summary>OUTLINE</summary><div class="outline" id="outline"></div></details>
       </aside>
-      <main class="frame" id="frame"><div id="editor"></div></main>
+      <main class="panes" id="panes"><div class="drop" id="drop" hidden></div></main>
     </div>
     <footer class="status">
       <span class="chip" id="st-state"></span>

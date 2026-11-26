@@ -10,7 +10,9 @@ A fast, lightweight standalone Markdown editor (Tauri 2 + Rust + CodeMirror 6).
 - Works on any plain-text file; `.md` files get live preview.
 - Renders `$math$` / `$$math$$` (KaTeX, as MathML), ```` ```mermaid ```` diagrams, raw HTML blocks (sanitized), footnotes, `[[wikilinks]]`, and links/images/math inside tables.
 - Sidebar (Ctrl+B) with the document's folder tree and an outline of its headings.
-- Reorder tabs by dragging; recent files list; window size and position are remembered.
+- Reorder tabs by dragging; drop a tab on the left/right half of the editor to view two documents side by side.
+- Drag the line on the right edge of the text to set the page width (double-click resets it).
+- Recent files list; window size and position are remembered.
 - Non-UTF-8 files: pick the encoding (Windows-1252, UTF-16, …) when opening, or click the encoding in the status bar to reopen/save with another one. Mixed line endings are preserved.
 - Export to HTML, or to PDF through the print dialog.
 - Themes: Dystopia, Phosphor, Synthwave.

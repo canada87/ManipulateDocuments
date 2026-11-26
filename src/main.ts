@@ -40,7 +40,9 @@ interface Tab {
 
 interface FileData { text: string; mtime: number | null; lossy: boolean; encoding: string }
 interface SessionTab { path: string | null; untitled: number; text?: string; mtime: number | null; eol: Eol; bom: boolean; enc?: string }
-interface Session { theme: string; active: number; nextUntitled: number; tabs: SessionTab[]; recent?: string[]; side?: boolean }
+interface Session { theme: string; active: number; nextUntitled: number; tabs: SessionTab[]; recent?: string[]; side?: boolean; page?: number }
+/** One editor area; with a split there are two side by side. A tab is shown in at most one pane. */
+interface Pane { el: HTMLElement; view: EditorView; tab: Tab }
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const tabs: Tab[] = [];
@@ -50,6 +52,9 @@ let nextUntitled = 1;
 let busy = 0; // >0 while we write files, so the disk watcher ignores our own mtime changes
 let version = "";
 let recent: string[] = [];
+let pageWidth = 880;
+const panes: Pane[] = [];
+let view: EditorView; // the focused pane's view
 const mode = new Compartment();
 
 // ---------- helpers ----------
@@ -113,14 +118,16 @@ function modeExt(t: Tab) {
 }
 
 const onUpdate = EditorView.updateListener.of(u => {
-  active.state = u.state;
+  const t = panes.find(p => p.view === u.view)?.tab;
+  if (!t) return;
+  t.state = u.state;
   if (u.docChanged) {
-    const d = computeDirty(active);
-    if (d !== active.dirty) { active.dirty = d; renderTabs(); }
+    const d = computeDirty(t);
+    if (d !== t.dirty) { t.dirty = d; renderTabs(); }
     persistSoon();
-    outlineSoon();
+    if (t === active) outlineSoon();
   }
-  if (u.docChanged || u.selectionSet) renderStatus();
+  if (t === active && (u.docChanged || u.selectionSet)) renderStatus();
 });
 
 function makeState(t: Tab, text: string, odd: [number, Eol][] = []) {
@@ -139,7 +146,83 @@ function makeState(t: Tab, text: string, odd: [number, Eol][] = []) {
   });
 }
 
-const view = new EditorView({ parent: $("editor") });
+// ---------- panes (split view) ----------
+const paneOf = (t: Tab) => panes.find(p => p.tab === t);
+
+function makePane(atStart: boolean): Pane {
+  const el = Object.assign(document.createElement("div"), { className: "frame" });
+  el.innerHTML = `<div class="editor"></div><div class="guide" title="Drag: page width · Double-click: reset"></div><button class="unsplit" title="Close this pane">×</button>`;
+  const p: Pane = { el, view: new EditorView({ parent: el.querySelector<HTMLElement>(".editor")! }), tab: null as unknown as Tab };
+  $("panes").insertBefore(el, atStart ? $("panes").firstChild : $("drop"));
+  if (atStart) panes.unshift(p); else panes.push(p);
+  el.addEventListener("focusin", () => { if (p.tab !== active) activate(p.tab, p); });
+  el.querySelector<HTMLElement>(".unsplit")!.onclick = () => unsplit(p);
+  const guide = el.querySelector<HTMLElement>(".guide")!;
+  guide.onpointerdown = e => dragGuide(p, e);
+  guide.ondblclick = () => { setPageWidth(880); persistSoon(); };
+  // The guide sits on the text column's right edge, which moves with the page width and the pane size.
+  const ro = new ResizeObserver(() => placeGuide(p));
+  ro.observe(p.view.contentDOM);
+  ro.observe(el);
+  return p;
+}
+
+function placeGuide(p: Pane) {
+  const right = p.view.contentDOM.getBoundingClientRect().right - p.el.getBoundingClientRect().left;
+  p.el.querySelector<HTMLElement>(".guide")!.style.left = `${Math.min(right, p.view.scrollDOM.clientWidth) - 4}px`;
+}
+
+function setPageWidth(w: number) {
+  pageWidth = Math.max(320, Math.round(w));
+  document.documentElement.style.setProperty("--page", `${pageWidth}px`);
+  panes.forEach(p => p.view.requestMeasure());
+}
+
+function dragGuide(p: Pane, down: PointerEvent) {
+  const g = down.target as HTMLElement;
+  const left = p.view.contentDOM.getBoundingClientRect().left; // the column is left-aligned
+  g.setPointerCapture(down.pointerId);
+  g.classList.add("on");
+  g.onpointermove = e => setPageWidth(e.clientX - left);
+  g.onpointerup = () => { g.onpointermove = g.onpointerup = null; g.classList.remove("on"); persistSoon(); };
+}
+
+/** Put `t` in pane `p`; if `t` was in the other pane, the two panes swap tabs. */
+function show(p: Pane, t: Tab) {
+  const q = paneOf(t), old = p.tab;
+  if (old) old.scroll = p.view.scrollDOM.scrollTop;
+  if (q) t.scroll = q.view.scrollDOM.scrollTop;
+  p.tab = t;
+  setView(p);
+  p.view.scrollDOM.scrollTop = t.scroll;
+  if (q && q !== p && old) { q.tab = old; setView(q); q.view.scrollDOM.scrollTop = old.scroll; }
+}
+
+function setView(p: Pane) {
+  p.view.setState(p.tab.state);
+  p.el.classList.toggle("plain", !isMd(p.tab));
+}
+
+/** A tab dropped on the left/right half of the editor area: show it there, splitting if needed. */
+function dropTab(t: Tab, right: boolean) {
+  if (panes.length > 1) return activate(t, panes[right ? 1 : 0]);
+  const only = panes[0];
+  if (only.tab === t) {
+    const i = tabs.indexOf(t), other = tabs[i - 1] ?? tabs[i + 1];
+    if (!other) return; // a single tab has nothing to sit beside
+    show(only, other);
+  }
+  activate(t, makePane(!right));
+}
+
+/** Close pane `p`; the other pane stays as it is. */
+function unsplit(p: Pane) {
+  if (panes.length < 2) return;
+  panes.splice(panes.indexOf(p), 1);
+  p.view.destroy();
+  p.el.remove();
+  activate(panes[0].tab, panes[0]);
+}
 
 // ---------- tabs ----------
 function newTab(path: string | null, data: FileData | null, current?: string): Tab {
@@ -160,16 +243,17 @@ function loadInto(t: Tab, data: FileData) {
   const { text, eol, bom, odd } = decodeRaw(data.text);
   Object.assign(t, { saved: text, eol, bom, enc: data.encoding, mtime: data.mtime, readOnly: data.lossy, forceDirty: false, conflict: null });
   t.state = makeState(t, text, odd);
-  if (t === active) view.setState(t.state);
+  const p = paneOf(t);
+  if (p) setView(p);
   t.dirty = computeDirty(t);
 }
 
-function activate(t: Tab) {
-  if (active && active !== t) active.scroll = view.scrollDOM.scrollTop;
+/** Make `t` the active tab: focus the pane showing it, or show it in pane `p` (default: the focused one). */
+function activate(t: Tab, p = paneOf(t) ?? paneOf(active) ?? panes[0]) {
+  if (p.tab !== t) show(p, t);
   active = t;
-  view.setState(t.state);
-  view.scrollDOM.scrollTop = t.scroll;
-  $("frame").classList.toggle("plain", !isMd(t));
+  view = p.view;
+  panes.forEach(x => x.el.classList.toggle("focused", x === p && panes.length > 1));
   renderTabs();
   renderStatus();
   renderBanner();
@@ -243,7 +327,8 @@ async function saveTab(t: Tab, as = false): Promise<boolean> {
   t.dirty = computeDirty(t);
   if (wasMd !== isMd(t)) {
     t.state = t.state.update({ effects: mode.reconfigure(modeExt(t)) }).state;
-    if (t === active) activate(t);
+    const p = paneOf(t);
+    if (p) setView(p);
   }
   addRecent(path);
   renderTabs(); renderStatus(); renderBanner(); renderSide(true); persistSoon();
@@ -259,8 +344,11 @@ async function closeTab(t: Tab) {
   const i = tabs.indexOf(t);
   tabs.splice(i, 1);
   if (!tabs.length) tabs.push(newTab(null, null));
-  if (active === t) activate(tabs[Math.min(i, tabs.length - 1)]);
-  else { renderTabs(); persistSoon(); }
+  const p = paneOf(t);
+  if (!p) { renderTabs(); persistSoon(); return; }
+  const free = tabs.filter(x => !paneOf(x));
+  if (!free.length) return unsplit(p); // the only tab left is already in the other pane
+  activate(free[Math.min(i, free.length - 1)], p);
 }
 
 function openLink(t: Tab, href: string) {
@@ -317,6 +405,7 @@ async function persistNow() {
     nextUntitled,
     recent,
     side: !$("side").hidden,
+    page: pageWidth,
     tabs: tabs.map(t => ({
       path: t.path, untitled: t.untitled, mtime: t.mtime, eol: t.eol, bom: t.bom, enc: t.enc,
       ...(t.dirty ? { text: docText(t) } : {}),
@@ -332,6 +421,7 @@ async function restore(s: Session) {
   recent = s.recent ?? [];
   renderRecent();
   $("side").hidden = !s.side;
+  if (s.page) setPageWidth(s.page);
   for (const st of s.tabs) {
     if (!st.path) {
       const t = newTab(null, null, st.text);
@@ -358,9 +448,11 @@ async function restore(s: Session) {
 // ---------- UI rendering ----------
 function renderTabs() {
   const bar = $("tabs");
+  const add = Object.assign(document.createElement("button"), { className: "add", textContent: "+", title: "New (Ctrl+N)" });
+  add.onclick = () => addTab(newTab(null, null));
   bar.replaceChildren(...tabs.map(t => {
     const el = document.createElement("div");
-    el.className = `tab${t === active ? " active" : ""}${t.dirty ? " dirty" : ""}${t.conflict ? " conflict" : ""}`;
+    el.className = `tab${t === active ? " active" : paneOf(t) ? " shown" : ""}${t.dirty ? " dirty" : ""}${t.conflict ? " conflict" : ""}`;
     el.title = t.path ?? "Not saved yet";
     el.setAttribute("role", "tab");
     el.innerHTML = `<span class="dot"></span><span class="name"></span><button class="x" title="Close (Ctrl+W)">×</button>`;
@@ -369,20 +461,27 @@ function renderTabs() {
     el.onpointerdown = e => { if (e.button === 0 && !(e.target as HTMLElement).classList.contains("x")) dragTab(t, e); };
     el.onclick = e => { if ((e.target as HTMLElement).classList.contains("x")) closeTab(t); else if (t !== active) activate(t); };
     return el;
-  }));
+  }), add);
   bar.querySelector(".active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  document.body.classList.toggle("dirty", active.dirty);
+  panes.forEach(p => p.el.classList.toggle("dirty", p.tab.dirty));
   const winTitle = `${active.dirty ? "● " : ""}${title(active)} — ${APP}`;
   document.title = winTitle;
   try { getCurrentWindow().setTitle(winTitle).catch(() => {}); } catch { /* not running inside Tauri */ }
 }
 
-/** Reorder tabs by dragging (pointer events: the webview's native drag & drop is taken by file drops). */
+/** Reorder tabs by dragging, or drop one on the editor's left/right half to split
+ *  (pointer events: the webview's native drag & drop is taken by file drops). */
 function dragTab(t: Tab, down: PointerEvent) {
   let moved = false;
+  let side: "left" | "right" | null = null;
+  const drop = $("drop");
   const move = (e: PointerEvent) => {
-    if (!moved && Math.abs(e.clientX - down.clientX) < 6) return;
+    if (!moved && Math.abs(e.clientX - down.clientX) < 6 && Math.abs(e.clientY - down.clientY) < 6) return;
     moved = true;
+    const a = $("panes").getBoundingClientRect();
+    side = e.clientY > a.top && e.clientX > a.left && e.clientX < a.right ? (e.clientX > a.left + a.width / 2 ? "right" : "left") : null;
+    drop.hidden = !side;
+    if (side) { drop.className = `drop ${side}`; return; }
     const over = (document.elementFromPoint(e.clientX, down.clientY) as HTMLElement | null)?.closest<HTMLElement>(".tab");
     const to = over ? [...$("tabs").children].indexOf(over) : -1;
     const from = tabs.indexOf(t);
@@ -397,7 +496,9 @@ function dragTab(t: Tab, down: PointerEvent) {
   const up = () => {
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
-    if (moved) persistSoon();
+    drop.hidden = true;
+    if (side) dropTab(t, side === "right");
+    else if (moved) persistSoon();
   };
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", up);
@@ -570,7 +671,7 @@ async function exportDoc(t: Tab, how: string) {
 function setTheme(name: string) {
   const ok = ["dystopia", "phosphor", "synthwave"].includes(name) ? name : "dystopia";
   document.documentElement.dataset.theme = ok;
-  $<HTMLSelectElement>("theme").value = ok;
+  $("settings").querySelectorAll<HTMLElement>("[data-set-theme]").forEach(b => b.classList.toggle("on", b.dataset.setTheme === ok));
 }
 
 /** In-app modal; resolves with the clicked label, or null on Esc. */
@@ -612,7 +713,8 @@ async function about() {
       <tr><td>Ctrl+Tab / Ctrl+Shift+Tab</td><td>Next / previous tab</td></tr>
       <tr><td>Ctrl+F</td><td>Find &amp; replace</td></tr>
       <tr><td>Ctrl+Click</td><td>Open link or [[wikilink]]; jump between a footnote and its text</td></tr>
-      <tr><td>Drag a tab</td><td>Reorder tabs</td></tr>
+      <tr><td>Drag a tab</td><td>Reorder tabs; drop it on the left/right half of the editor to view two side by side</td></tr>
+      <tr><td>Drag the page edge line</td><td>Page width (double-click resets)</td></tr>
       <tr><td>Click the encoding</td><td>Reopen or save with another encoding</td></tr>
     </table>`, ["Close"], true);
 }
@@ -620,6 +722,7 @@ async function about() {
 // ---------- wiring ----------
 document.addEventListener("keydown", e => {
   if (!$("modal").hidden) return;
+  if (e.key === "Escape" && !$("settings").hidden) { $("settings").hidden = true; view.focus(); return; }
   const mod = e.ctrlKey || e.metaKey;
   if (!mod) return;
   const k = e.key.toLowerCase();
@@ -632,10 +735,8 @@ document.addEventListener("keydown", e => {
   else if (k === "tab") run(() => activate(tabs[(tabs.indexOf(active) + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length]));
 }, true);
 
-$("btn-new").onclick = () => addTab(newTab(null, null));
 $("btn-open").onclick = openDialog;
 $("btn-save").onclick = () => saveTab(active);
-$("btn-about").onclick = about;
 $("st-ver").onclick = about;
 $("st-fmt").onclick = () => changeEncoding(active);
 $("btn-side").onclick = toggleSide;
@@ -644,13 +745,23 @@ $<HTMLSelectElement>("recent").onchange = e => {
   sel.value = "";
   if (p) openFiles([p]); else view.focus();
 };
-$<HTMLSelectElement>("export").onchange = e => {
-  const sel = e.target as HTMLSelectElement, how = sel.value;
-  sel.value = "";
+$("btn-settings").onclick = () => { $("settings").hidden = !$("settings").hidden; };
+document.addEventListener("pointerdown", e => {
+  if (!(e.target as HTMLElement).closest(".menu-wrap")) $("settings").hidden = true;
+});
+$("settings").onclick = e => {
+  const b = (e.target as HTMLElement).closest("button");
+  if (!b) return;
+  $("settings").hidden = true;
   view.focus();
-  exportDoc(active, how);
+  if (b.dataset.export) exportDoc(active, b.dataset.export);
+  else if (b.dataset.setTheme) { setTheme(b.dataset.setTheme); persistNow(); }
+  else about();
 };
-$<HTMLSelectElement>("theme").onchange = e => { setTheme((e.target as HTMLSelectElement).value); persistNow(); view.focus(); };
+
+makePane(false);
+view = panes[0].view;
+setTheme("dystopia"); // marks the default in the menu; the session overrides it
 
 async function start() {
   version = await getVersion().catch(() => "dev");
